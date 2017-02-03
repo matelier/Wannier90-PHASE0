@@ -437,6 +437,8 @@ module w90_parameters
   ! AAM_2016-09-15: hr_plot is a deprecated input parameter. Replaced by write_hr.
   logical                            :: hr_plot 
 
+  integer :: nx, ny, nz, ktmp  ! ASMS
+
   public :: param_read
   public :: param_write
   public :: param_postw90_write
@@ -1771,7 +1773,20 @@ contains
     if(found.and.library) write(stdout,'(a)') ' Ignoring <kpoints> in input file'
     if (.not. library .and. .not.effective_model) then
        kpt_latt=kpt_cart
-       if(.not. found) call io_error('Error: Did not find the kpoint information in the input file')
+!       if(.not. found) call io_error('Error: Did not find the kpoint information in the input file')
+       if(.not. found) then
+          ktmp = 0
+          do nz=0, mp_grid(3)-1
+             do ny=0, mp_grid(2)-1
+                do nx=0, mp_grid(1)-1
+                   ktmp = ktmp +1
+                   kpt_latt(1,ktmp) = dble(nx) /dble(mp_grid(1))
+                   kpt_latt(2,ktmp) = dble(ny) /dble(mp_grid(2))
+                   kpt_latt(3,ktmp) = dble(nz) /dble(mp_grid(3))
+                end do
+             end do
+          end do
+       end if
     end if
 
     ! Calculate the kpoints in cartesian coordinates
