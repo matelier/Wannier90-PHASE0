@@ -108,6 +108,7 @@ module w90_parameters
   logical,           public, save :: wannier_plot
   integer, allocatable, public,save :: wannier_plot_list(:)
   integer,           public, save :: wannier_plot_supercell(3)
+  integer,           public, save :: wannier_cube_supercell(3)  ! ASMS
   character(len=20), public, save :: wannier_plot_format
   character(len=20), public, save :: wannier_plot_mode
   logical,           public, save :: write_u_matrices
@@ -760,9 +761,36 @@ contains
        if (any(wannier_plot_supercell<=0)) &
             call io_error('Error: wannier_plot_supercell elements must be greater than zero')
     end if
+!------------------------------------------------------------ASMS
+    wannier_cube_supercell = 0
+    call param_get_vector_length('wannier_cube_supercell',found,length=i)
+    if (found) then
+       if (i.eq.1) then
+          call param_get_keyword_vector('wannier_cube_supercell',found,1, &
+               i_value=wannier_cube_supercell)
+          wannier_cube_supercell(2) = wannier_cube_supercell(1)
+          wannier_cube_supercell(3) = wannier_cube_supercell(1)
+       elseif (i.eq.3) then
+          call param_get_keyword_vector('wannier_cube_supercell',found,3, &
+               i_value=wannier_cube_supercell)
+       else
+         call io_error('Error: wannier_cube_supercell must be provided as either one integer or a vector of three integers')
+       end if
+       if (any(wannier_cube_supercell<=0)) &
+            call io_error('Error: wannier_cube_supercell elements must be greater than zero')
 
+       do i = 1, 3
+          if (wannier_cube_supercell(i) > wannier_plot_supercell(i)) wannier_cube_supercell(i) = wannier_plot_supercell(i)
+       end do
+    else  ! .not. found
+       do i = 1, 3
+          wannier_cube_supercell(i) = wannier_plot_supercell(i)
+       end do
+    end if
+!    write(*,*) wannier_cube_supercell, wannier_plot_supercell
+!------------------------------------------------------------
 
-    wannier_plot_format       = 'xcrysden'
+    wannier_plot_format       = 'matelier' ! 'xcrysden'
     call param_get_keyword('wannier_plot_format',found,c_value=wannier_plot_format)
 
     wannier_plot_mode       = 'crystal'
@@ -791,7 +819,8 @@ contains
 
     ! checks
     if (wannier_plot) then
-       if ( (index(wannier_plot_format,'xcrys').eq.0) .and. (index(wannier_plot_format,'cub').eq.0) ) &
+       if ( (index(wannier_plot_format,'xcrys').eq.0) .and. (index(wannier_plot_format,'cub').eq.0) &
+            .and. (index(wannier_plot_format,'matelier').eq.0) ) &
             call io_error('Error: wannier_plot_format not recognised')
        if ( (index(wannier_plot_mode,'crys').eq.0) .and. (index(wannier_plot_mode,'mol').eq.0) ) &
             call io_error('Error: wannier_plot_mode not recognised')
@@ -2418,7 +2447,8 @@ contains
 
           write(stdout,'(1x,a46,10x,a8,13x,a1)') '|   Plotting mode (molecule or crystal)      :',trim(wannier_plot_mode),'|'
           write(stdout,'(1x,a46,10x,a8,13x,a1)') '|   Plotting format                          :',trim(wannier_plot_format),'|'
-          if (index(wannier_plot_format,'cube')>0 .or. iprint>2) &
+!          if (index(wannier_plot_format,'cube')>0 .or. iprint>2) &
+          if (index(wannier_plot_format,'cube')>0 .or. index(wannier_plot_format,'matelier')>0 .or. iprint>2) &
           write(stdout,'(1x,a46,10x,F8.3,13x,a1)') '|   Plot radius                              :',wannier_plot_radius,'|'
           write(stdout,'(1x,a78)') '*----------------------------------------------------------------------------*'
        end if

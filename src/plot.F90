@@ -1061,6 +1061,8 @@ end subroutine plot_interpolate_bands
        call internal_xsf_format()
     elseif (wannier_plot_format.eq.'cube') then
        call internal_cube_format()
+    elseif (wannier_plot_format.eq.'matelier') then  ! ASMS
+       call internal_cube_format_matelier()
     else
        call io_error('wannier_plot_format not recognised in wannier_plot')
     endif
@@ -1291,6 +1293,259 @@ end subroutine plot_interpolate_bands
       return
 
     end subroutine internal_cube_format
+
+    !============================================!
+    subroutine internal_cube_format_matelier()  ! ASMS
+    !============================================!
+
+      use w90_constants,  only: bohr
+      use w90_parameters, only: recip_lattice,iprint,&
+           ngs=>wannier_plot_supercell,wannier_plot_radius,wannier_centres,atoms_symbol, &
+           msg=>wannier_cube_supercell, &
+           translate_home_cell
+      use w90_utility,    only: utility_translate_home
+
+      implicit none
+
+      real(kind=dp), allocatable :: wann_cube(:,:,:)
+      real(kind=dp) :: rstart(3),rend(3),rlength(3),orig(3),dgrid(3)
+      real(kind=dp) :: moda(3),modb(3)
+      real(kind=dp) :: radius,val_Q
+      real(kind=dp) :: wc(3,num_wann) 
+      integer :: ierr,iname,max_elements,iw
+      integer :: isp,iat,nzz,nyy,nxx,loop_w,qxx,qyy,qzz,wann_index
+      integer :: istart(3),iend(3),ilength(3)
+      integer :: ixx,iyy,izz
+      integer, allocatable :: atomic_Z(:)
+      character(len=2), dimension(109) :: periodic_table= (/ &
+           & 'H ',                                                                                'He', &
+           & 'Li','Be',                                                  'B ','C ','N ','O ','F ','Ne', &
+           & 'Na','Mg',                                                  'Al','Si','P ','S ','Cl','Ar', &
+           & 'K ','Ca','Sc','Ti','V ','Cr','Mn','Fe','Co','Ni','Cu','Zn','Ga','Ge','As','Se','Br','Kr', &
+           & 'Rb','Sr','Y ','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd','In','Sn','Sb','Te','I ','Xe', &
+           & 'Cs','Ba', &
+           & 'La','Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu', &
+           & 'Hf','Ta','W ','Re','Os','Ir','Pt','Au','Hg','Tl','Pb','Bi','Po','At','Rn', &
+           & 'Fr','Ra', &
+           & 'Ac','Th','Pa','U ','Np','Pu','Am','Cm','Bk','Cf','Es','Fm','Md','No','Lr', &
+           & 'Rf','Db','Sg','Bh','Hs','Mt' /)      
+
+      logical :: warnPBC  ! ASMS
+
+      allocate(atomic_Z(num_species),stat=ierr)
+      if (ierr.ne.0) call io_error('Error: allocating atomic_Z in wannier_plot')
+
+      allocate(wann_cube(ngx*ngs(1), ngy*ngs(2), ngz*ngs(3)), stat=ierr)
+      if (ierr.ne.0) call io_error('Error: allocating wann_matelier in wannier_plot')
+
+
+      radius = wannier_plot_radius
+      val_Q = 1.0_dp ! dummy value for cube file
+
+      ! Assign atomic numbers to species
+      max_elements=size(periodic_table)
+      do isp=1,num_species
+        do iname=1,max_elements
+           if ( atoms_symbol(isp).eq.periodic_table(iname) ) then
+              atomic_Z(isp)=iname
+              exit
+           endif
+        enddo
+     end do
+        
+202   format (a,'_',i5.5,'.cube')
+
+      ! Lengths of real and reciprocal lattice vectors 
+      do i=1,3
+         moda(i) = sqrt( real_lattice(i,1)*real_lattice(i,1) &
+              + real_lattice(i,2)*real_lattice(i,2) &
+              + real_lattice(i,3)*real_lattice(i,3) )
+         modb(i) = sqrt( recip_lattice(i,1)*recip_lattice(i,1) &
+              + recip_lattice(i,2)*recip_lattice(i,2) &
+              + recip_lattice(i,3)*recip_lattice(i,3) )
+      enddo
+      
+      ! Grid spacing in each lattice direction
+      dgrid(1) = moda(1)/ngx; dgrid(2) = moda(2)/ngy; dgrid(3)=moda(3)/ngz
+
+      ! Translate centres to home unit cell
+      wc = wannier_centres
+      if (translate_home_cell) then
+         do iw=1,num_wann
+            call utility_translate_home(wc(:,iw),real_lattice,recip_lattice)
+         enddo
+      endif
+
+      ! Loop over WFs
+      do loop_w=1,num_wannier_plot
+         
+         wann_index = wannier_plot_list(loop_w)
+         write(wancube,202) trim(seedname),wann_index
+
+         ! Find start and end of cube wrt simulation cell origin
+         do i=1,3
+            ! ... in terms of distance along each lattice vector direction i
+            rstart(i) = ( wc(1,wann_index)*recip_lattice(i,1) &
+                 + wc(2,wann_index)*recip_lattice(i,2) &
+                 + wc(3,wann_index)*recip_lattice(i,3) - radius*modb(i) ) * moda(i) / twopi
+            rend(i) = ( wc(1,wann_index)*recip_lattice(i,1) &
+                 + wc(2,wann_index)*recip_lattice(i,2) &
+                 + wc(3,wann_index)*recip_lattice(i,3) + radius*modb(i) ) * moda(i) / twopi
+         enddo
+
+         rlength(:) = rend(:) - rstart(:)
+         ilength(:) = ceiling(rlength(:)/dgrid(:))
+         
+         ! ... in terms of integer gridpoints along each lattice vector direction i
+         istart(:)  = floor(rstart(:)/dgrid(:)) + 1
+         iend(:)    = istart(:) + ilength(:) - 1 
+
+         ! Origin of cube wrt simulation cell in Cartesian co-ordinates
+         do i=1,3
+            orig(i) = real(istart(1)-1,dp)*dgrid(1)*real_lattice(1,i)/moda(1) &
+                 + real(istart(2)-1,dp)*dgrid(2)*real_lattice(2,i)/moda(2) &
+                 + real(istart(3)-1,dp)*dgrid(3)*real_lattice(3,i)/moda(3)
+         enddo
+
+         ! Debugging
+         if (iprint>3) then
+            write(stdout,'(a,3i12)')     'ngi     =', ngx,ngy,ngz
+            write(stdout,'(a,3f12.6)')   'dgrid   =',(dgrid(i),i=1,3)
+            write(stdout,'(a,3f12.6)')   'rstart  =',(rstart(i),i=1,3)
+            write(stdout,'(a,3f12.6)')   'rend    =',(rend(i),i=1,3)
+            write(stdout,'(a,3f12.6)')   'rlength =',(rlength(i),i=1,3)
+            write(stdout,'(a,3i12)')     'istart  =',(istart(i),i=1,3)
+            write(stdout,'(a,3i12)')     'iend    =',(iend(i),i=1,3)
+            write(stdout,'(a,3i12)')     'ilength =',(ilength(i),i=1,3)
+            write(stdout,'(a,3f12.6)')   'orig    =',(orig(i),i=1,3)
+            write(stdout,'(a,3f12.6,/)') 'wann_cen=',(wannier_centres(i,wann_index),i=1,3)
+         endif
+
+!         allocate(wann_cube(1:ilength(1),1:ilength(2),1:ilength(3)),stat=ierr)
+!         if (ierr.ne.0) call io_error('Error: allocating wann_cube in wannier_plot')
+
+         ! initialise
+         wann_cube = 0.0_dp
+         warnPBC = .false.
+
+         do nzz=1,ilength(3)
+            qzz=nzz+istart(3)-1
+            izz=int((abs(qzz)-1)/ngz)
+!            if (qzz.lt.-ngz) qzz=qzz+izz*ngz
+!            if (qzz.gt.(ngs(3)-1)*ngz-1) then
+            if (qzz.lt.(-((ngs(3))/2)*ngz)) qzz=qzz+izz*ngz
+            if (qzz.gt.((ngs(3)+1)/2)*ngz-1) then
+!               write(stdout,*) 'Error plotting WF cube. Try one of the following:'
+!               write(stdout,*) '   (1) increase wannier_plot_supercell;'
+!               write(stdout,*) '   (2) decrease wannier_plot_radius;'
+!               write(stdout,*) '   (3) set wannier_plot_format=xcrysden'
+!               call io_error('Error plotting WF cube.')
+               warnPBC = .true.
+            endif
+            do nyy=1,ilength(2)
+               qyy=nyy+istart(2)-1
+               iyy=int((abs(qyy)-1)/ngy)
+!               if (qyy.lt.-ngy) qyy=qyy+iyy*ngy
+!               if (qyy.gt.(ngs(2)-1)*ngy-1) then
+               if (qyy.lt.(-((ngs(2))/2)*ngy)) qyy=qyy+iyy*ngy
+               if (qyy.gt.((ngs(2)+1)/2)*ngy-1) then
+!                  write(stdout,*) 'Error plotting WF cube. Try one of the following:'
+!                  write(stdout,*) '   (1) increase wannier_plot_supercell;'
+!                  write(stdout,*) '   (2) decrease wannier_plot_radius;'
+!                  write(stdout,*) '   (3) set wannier_plot_format=xcrysden'
+!                  call io_error('Error plotting WF cube.')
+                  warnPBC = .true.
+               endif
+               do nxx=1,ilength(1)
+                  qxx=nxx+istart(1)-1
+                  ixx=int((abs(qxx)-1)/ngx)
+!                  if (qxx.lt.-ngx) qxx=qxx+ixx*ngx
+!                  if (qxx.gt.(ngs(1)-1)*ngx-1) then
+                  if (qxx.lt.(-((ngs(1))/2)*ngx)) qxx=qxx+ixx*ngx
+                  if (qxx.gt.((ngs(1)+1)/2)*ngx-1) then
+!                     write(stdout,*) 'Error plotting WF cube. Try one of the following:'
+!                     write(stdout,*) '   (1) increase wannier_plot_supercell;'
+!                     write(stdout,*) '   (2) decrease wannier_plot_radius;'
+!                     write(stdout,*) '   (3) set wannier_plot_format=xcrysden'
+!                     call io_error('Error plotting WF cube.')                     
+                     warnPBC = .true.
+                  endif
+!                  wann_cube(nxx,nyy,nzz) = real(wann_func(qxx,qyy,qzz,loop_w),dp)
+               enddo
+            enddo
+         enddo
+         if (warnPBC) then
+            write(stdout,*) loop_w
+            write(stdout,*) 'Warning plotting WF cube. Try one of the following:'
+            write(stdout,*) '   (1) increase wannier_plot_supercell;'
+            write(stdout,*) '   (2) decrease wannier_plot_radius;'
+         endif
+
+         ! Write cube file (everything in Bohr)
+         file_unit=io_file_unit()
+         open(unit=file_unit,file=trim(wancube),form='formatted',status='unknown')
+         ! First two lines are comments
+         write(file_unit,*) '     Generated by Wannier90 code http://www.wannier.org'
+         write(file_unit,*) '     On ',cdate,' at ',ctime
+         ! Number of atoms, origin of cube (Cartesians) wrt simulation cell
+!         write(file_unit,'(i4,3f13.5)') num_atoms, orig(1)/bohr, orig(2)/bohr, orig(3)/bohr
+         write(file_unit,'(i4,3f13.5)') num_atoms, 0.0, 0.0, 0.0
+         ! Number of grid points in each direction, lattice vector
+!         write(file_unit,'(i4,3f13.5)') ilength(1), real_lattice(1,1)/(real(ngx,dp)*bohr), &
+         write(file_unit,'(i4,3f13.5)') ngx *msg(1), real_lattice(1,1)/(real(ngx,dp)*bohr), &
+              real_lattice(1,2)/(real(ngy,dp)*bohr), real_lattice(1,3)/(real(ngz,dp)*bohr)
+!         write(file_unit,'(i4,3f13.5)') ilength(2), real_lattice(2,1)/(real(ngx,dp)*bohr), &
+         write(file_unit,'(i4,3f13.5)') ngy *msg(2), real_lattice(2,1)/(real(ngx,dp)*bohr), &
+              real_lattice(2,2)/(real(ngy,dp)*bohr), real_lattice(2,3)/(real(ngz,dp)*bohr)
+!         write(file_unit,'(i4,3f13.5)') ilength(3), real_lattice(3,1)/(real(ngx,dp)*bohr), &
+         write(file_unit,'(i4,3f13.5)') ngz *msg(3), real_lattice(3,1)/(real(ngx,dp)*bohr), &
+              real_lattice(3,2)/(real(ngy,dp)*bohr), real_lattice(3,3)/(real(ngz,dp)*bohr)
+
+         ! Atomic number, valence charge, position of atom
+         do isp=1,num_species
+            do iat=1,atoms_species_num(isp)
+               write(file_unit,'(i4,4f13.5)') atomic_Z(isp), val_Q, (atoms_pos_cart(i,iat,isp)/bohr,i=1,3)
+            end do
+         end do
+
+         ! folding
+         do nxx =       -((ngs(1))/2)*ngx, ((ngs(1)+1)/2)*ngx-1
+            do nyy =    -((ngs(2))/2)*ngy, ((ngs(2)+1)/2)*ngy-1
+               do nzz = -((ngs(3))/2)*ngz, ((ngs(3)+1)/2)*ngz-1
+                  ixx = mod(nxx + 2*ngs(1) * ngx -1, msg(1)*ngx) + 1
+                  iyy = mod(nyy + 2*ngs(2) * ngy -1, msg(2)*ngy) + 1
+                  izz = mod(nzz + 2*ngs(3) * ngz -1, msg(3)*ngz) + 1
+                  if (abs(wann_cube(ixx, iyy, izz)) < abs( real(wann_func(nxx, nyy, nzz, loop_w), dp)) ) &
+                       wann_cube(ixx, iyy, izz) = real(wann_func(nxx, nyy, nzz, loop_w), dp)
+               end do
+            end do
+         end do
+
+         ! Volumetric data in batches of 6 values per line, 'z'-direction first.
+         do nxx=      1,ngx*msg(1)  ! ilength(1)
+            do nyy=   1,ngy*msg(2)  ! ilength(2)
+               do nzz=1,ngz*msg(3)  ! ilength(3)
+                  write(file_unit,'(E13.5)',advance='no') wann_cube(nxx,nyy,nzz)
+!                  if ((mod(nzz,6).eq.0) .or. (nzz.eq.ilength(3))) write(file_unit,'(a)') ''
+                  if ((mod(nzz,6).eq.0) .or. (nzz.eq.ngz*msg(3))) write(file_unit,'(a)') ''
+               enddo
+            enddo
+         enddo
+
+!         deallocate(wann_cube,stat=ierr)
+!         if (ierr.ne.0) call io_error('Error: deallocating wann_cube in wannier_plot')
+        
+      end do
+
+      deallocate(wann_cube,stat=ierr)
+      if (ierr.ne.0) call io_error('Error: deallocating wann_cube in wannier_plot')
+
+      deallocate(atomic_Z,stat=ierr)
+      if (ierr.ne.0) call io_error('Error: deallocating atomic_Z in wannier_plot')
+
+      return
+
+    end subroutine internal_cube_format_matelier
 
 
 
